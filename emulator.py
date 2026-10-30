@@ -96,14 +96,16 @@ Example: 0x0140 in binary is 0b0000_0001_0100_0000. Bits count from 0 on the
 right, so bits 6 and 8 are set. See the Statusword states in README.txt.
 
 Reading the CAN log:
-  RX id=0x601 data=40 41 60 00 00 00 00 00
+  RX id=<CAN ID> data=<bytes>
 
   RX          a frame was received
-  id=0x601    its CAN ID: 0x600 + node ID is a request to this device
-  data=...    its data bytes in hex, and values are sent low byte first
+  id=         the frame's CAN ID, which says what kind of frame it is
+  data=       the frame's data bytes in hex, with values sent low byte first
 
-The lines after it say what the emulator did with the frame. Replies go out on
-0x581. See SDO frames in README.txt for the meaning of each byte."""
+Every frame on the bus is logged. Only a request to this device gets a reply:
+requests use CAN ID 0x600 + node ID, and replies use 0x580 + node ID. The lines
+after a request say what the emulator did with it. See SDO frames in README.txt
+for the meaning of each byte."""
 
 
 # Print one register's address, access, name and value in hex, and optionally binary
