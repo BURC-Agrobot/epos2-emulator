@@ -76,6 +76,36 @@ motor = Motor()
 setpoint_acknowledged = False
 
 
+# Explanation of the emulator's output, printed by --help
+OUTPUT_HELP = """\
+Reading a register line:
+  0x6041 sub 0x00 RO Statusword = 0x0140
+
+  0x...       a number in hexadecimal (base 16)
+  0x6041      index: the register's address
+  sub 0x00    subindex: selects a part of a register, and 0x00 is the first
+  RO          access: RO is read-only for the host, RW is read/write
+  Statusword  the register's name in the firmware spec
+  0x0140      the current value, with two hex digits per byte
+
+Extra values on some lines:
+  (-500)      the value in decimal, shown for signed registers
+  0b0000_...  the value in binary, shown by reg -b, with bits grouped in fours
+
+Example: 0x0140 in binary is 0b0000_0001_0100_0000. Bits count from 0 on the
+right, so bits 6 and 8 are set. See the Statusword states in README.txt.
+
+Reading the CAN log:
+  RX id=0x601 data=40 41 60 00 00 00 00 00
+
+  RX          a frame was received
+  id=0x601    its CAN ID: 0x600 + node ID is a request to this device
+  data=...    its data bytes in hex, and values are sent low byte first
+
+The lines after it say what the emulator did with the frame. Replies go out on
+0x581. See SDO frames in README.txt for the meaning of each byte."""
+
+
 # Print one register's address, access, name and value in hex, and optionally binary
 def print_register(index: int, subindex: int, entry: Entry, show_binary: bool = False) -> None:
     access = "RW" if entry.writable else "RO"
@@ -123,6 +153,9 @@ def handle_command(line: str) -> None:
         print("  reg 0x6041     print one register (subindex 0x00)")
         print("  reg 0x6041 -b  also print its value in binary")
         print("  help           list the commands")
+        print("  --help         explain the output")
+    elif words == ["--help"]:
+        print(OUTPUT_HELP)
     elif words[0] == "reg" and (len(words) == 2 or words[2:] == ["-b"]) and not words[1].startswith("-"):
         # Read the index as hex, with or without the 0x prefix
         try:
@@ -334,6 +367,10 @@ def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
 
 # Run the emulator when this file is started from the command line
 def main() -> None:
+    # Explain the output and stop, without needing a CAN interface
+    if sys.argv[1:] == ["--help"]:
+        print(OUTPUT_HELP)
+        return
     # Announce startup so we can see the program actually ran
     print(f"EPOS2 emulator starting on {CAN_CHANNEL}")
     # Show the startup register values
