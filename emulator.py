@@ -57,6 +57,12 @@ def print_registers() -> None:
         print_register(index, subindex, entry)
 
 
+# Print the prompt that invites a typed command
+def print_prompt() -> None:
+    # Flush because the terminal only shows unfinished lines when told to
+    print(">>> ", end="", flush=True)
+
+
 # Run one command typed into the emulator's terminal
 def handle_command(line: str) -> None:
     # Split the line into words, so extra spaces do not matter
@@ -192,6 +198,7 @@ def main() -> None:
         try:
             # The two inputs to watch: CAN frames and lines typed in the terminal
             inputs = [bus, sys.stdin]
+            print_prompt()
             # Handle whichever input is ready, forever
             while True:
                 # Block until at least one input has something to read
@@ -199,12 +206,16 @@ def main() -> None:
                 if bus in ready:
                     # A frame is waiting, so this returns without blocking
                     frame = bus.recv(timeout=0)
-                    if frame is not None:
-                        # Print the CAN ID and data bytes in hex, like candump
-                        print(f"RX id=0x{frame.arbitration_id:03X} data={frame.data.hex(' ').upper()}")
-                        # Only standard 11-bit frames with our request ID are SDOs for us
-                        if frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id:
-                            handle_sdo_request(bus, bytes(frame.data))
+                    # Nothing arrived after all, so go back to waiting
+                    if frame is None:
+                        continue
+                    # Finish the prompt's line so the frame log starts on its own
+                    print()
+                    # Print the CAN ID and data bytes in hex, like candump
+                    print(f"RX id=0x{frame.arbitration_id:03X} data={frame.data.hex(' ').upper()}")
+                    # Only standard 11-bit frames with our request ID are SDOs for us
+                    if frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id:
+                        handle_sdo_request(bus, bytes(frame.data))
                 if sys.stdin in ready:
                     line = sys.stdin.readline()
                     if line:
@@ -214,6 +225,9 @@ def main() -> None:
                         # reporting it as ready, and keep serving the bus
                         print("Terminal input closed, CAN handling continues")
                         inputs.remove(sys.stdin)
+                # Show the prompt again after any output, if input is still open
+                if sys.stdin in inputs:
+                    print_prompt()
         except KeyboardInterrupt:
             # Stop cleanly when the user presses Ctrl+C
             print("\nEPOS2 emulator stopped")

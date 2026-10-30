@@ -38,7 +38,7 @@ Run
 Seeing the registers
 --------------------
 The emulator prints every register and its current value at startup and after
-each stored write. You can also type these commands into its terminal while it
+each stored write. You can also type these commands at its >>> prompt while it
 runs:
     regs        print all registers
     reg 0x6041  print one register (subindex 0x00, with or without the 0x)
@@ -46,7 +46,9 @@ runs:
 
 These commands only look at the emulator's registers and send nothing on the
 CAN bus. Frame logs may print between your commands, since everything shares
-one terminal. To get a register's value over CAN, use an SDO read.
+one terminal. If a frame arrives while you are typing, your text stays in the
+terminal's buffer and still runs when you press Enter, but it is not redrawn
+after the new prompt. To get a register's value over CAN, use an SDO read.
 
 Each line shows the index, subindex, access (RO or RW), name and current value
 in hex and binary, padded to the register's full width, with binary bits grouped
