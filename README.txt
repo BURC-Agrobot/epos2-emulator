@@ -35,7 +35,7 @@ Type these at the >>> prompt. They send nothing on the CAN bus.
     help           list the commands
     --help         explain the output (also: emulator.py --help)
 
-All registers also print at startup and after each stored write:
+Each register prints as:
     0x6041 sub 0x00 RO Statusword = 0x0140
 
 With -b:

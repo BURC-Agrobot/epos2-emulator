@@ -114,7 +114,7 @@ Lines after a request:
   SDO read ok                  the read succeeded, with the value sent back
   SDO read refused             the address does not exist, so an abort was sent
   SDO write index= sub=        a write request arrived, with its value and size
-  SDO write stored             the write was accepted, and all registers follow
+  SDO write stored             the write was accepted
   SDO write refused            the write failed a check, so an abort was sent
   SDO unsupported              unknown command or not 8 bytes, abort sent
   SDO abort received           the host cancelled a transfer, no reply sent
@@ -384,8 +384,6 @@ def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
     if abort_code is None:
         print(f"SDO write stored, sending ok on 0x{SDO_RESPONSE_ID:03X}")
         send_sdo_reply(bus, SDO_WRITE_OK, index, subindex, 0)
-        # Show the new register values after every change
-        print_registers()
     else:
         print(f"SDO write refused, sending abort 0x{abort_code:08X} on 0x{SDO_RESPONSE_ID:03X}")
         send_sdo_reply(bus, SDO_ABORT, index, subindex, abort_code)
@@ -399,8 +397,6 @@ def main() -> None:
         return
     # Announce startup so we can see the program actually ran
     print(f"EPOS2 emulator starting on {CAN_CHANNEL}")
-    # Show the startup register values
-    print_registers()
 
     # Open the CAN interface through Linux SocketCAN
     # The "with" block closes the interface automatically when we exit
