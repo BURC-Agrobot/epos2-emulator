@@ -1,0 +1,85 @@
+EPOS2 startup sequence
+======================
+
+From power on to a finished move, for node 1. Start the emulator, run
+candump vcan0 in another terminal, then send these in order. Replies arrive on
+CAN ID 581.
+
+1. Power on
+-----------
+The drive starts up by itself and ends in Switch On Disabled. The emulator
+starts there directly.
+
+Check the state:
+    cansend vcan0 601#4041600000000000
+    Reply: 4B 41 60 00 40 01 00 00    Statusword 0x0140
+
+2. Select Profile Position Mode
+-------------------------------
+    cansend vcan0 601#2F60600001000000
+    Reply: 60 60 60 00 00 00 00 00
+
+Check the mode:
+    cansend vcan0 601#4061600000000000
+    Reply: 4F 61 60 00 01 00 00 00    mode 1
+
+3. Set the motion profile
+-------------------------
+Profile Velocity, 1000 rpm:
+    cansend vcan0 601#23816000E8030000
+    Reply: 60 81 60 00 00 00 00 00
+
+Profile Acceleration, 10000 rpm/s:
+    cansend vcan0 601#2383600010270000
+    Reply: 60 83 60 00 00 00 00 00
+
+Profile Deceleration, 10000 rpm/s:
+    cansend vcan0 601#2384600010270000
+    Reply: 60 84 60 00 00 00 00 00
+
+4. Enable the drive
+-------------------
+Each Controlword write moves one state. Read the Statusword after each one:
+    cansend vcan0 601#4041600000000000
+
+    Command           Send                                State               Statusword
+    Shutdown          cansend vcan0 601#2B40600006000000  Ready to Switch On  0x0121
+    Switch On         cansend vcan0 601#2B40600007000000  Switched On         0x0123
+    Enable Operation  cansend vcan0 601#2B4060000F000000  Operation Enable    0x0537
+
+Power is now on the motor.
+
+5. Move the motor
+-----------------
+Target Position, 20000 quadcounts (10 revolutions):
+    cansend vcan0 601#237A6000204E0000
+    Reply: 60 7A 60 00 00 00 00 00
+
+New setpoint (Controlword bit 4 set), which starts the move:
+    cansend vcan0 601#2B4060001F000000
+    Reply: 60 40 60 00 00 00 00 00
+
+Clear the bit, so the drive can take another setpoint:
+    cansend vcan0 601#2B4060000F000000
+    Reply: 60 40 60 00 00 00 00 00
+
+6. Confirm the move finished
+----------------------------
+The move takes about 0.7 seconds. Target reached is bit 10 of the Statusword:
+    cansend vcan0 601#4041600000000000
+    Reply: 4B 41 60 00 37 05 00 00    Statusword 0x0537, target reached
+
+Position Actual Value:
+    cansend vcan0 601#4064600000000000
+    Reply: 43 64 60 00 20 4E 00 00    20000
+
+7. Stop
+-------
+Disable Voltage turns the motor off and returns to Switch On Disabled:
+    cansend vcan0 601#2B40600000000000
+    Reply: 60 40 60 00 00 00 00 00
+
+Real hardware
+-------------
+A real EPOS2 also needs its motor and sensor settings configured before step 4.
+The emulator has no such registers, so this sequence does not cover them.
