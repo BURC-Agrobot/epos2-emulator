@@ -86,27 +86,118 @@ Starts at is the value held at startup.
     Starts at: 0x0140 (the spec gives no default: this is the "Switch On
                Disabled" state with offset current measured, bits 8 and 6)
 
-Updating a register
--------------------
-With the emulator running, send an SDO write to node 1 on CAN ID 601, and watch
-the reply with candump vcan0 in another terminal:
+SDO read and write
+------------------
+An SDO is a bus transaction carried in two CAN frames: the host sends one
+request, and the device sends one reply. The host is the initiator, and the
+device owning the object dictionary only ever responds. Unlike a CPU bus access,
+nothing happens on a shared clock: the host must wait for the reply and treat a
+missing one as a timeout. Frame formats below come from the EPOS2 Application
+Notes, section 10.4. All frames here are for node 1.
+
+Status in this emulator:
+    Write: built for 2F, 2B and 23, as shown below.
+    Read:  not built. The read frames show what a real EPOS2 sends.
+
+CAN ID: the channel
+    601  request, host to device (0x600 + node ID)
+    581  reply, device to host (0x580 + node ID)
+
+Data bytes: always 8, with multi-byte fields low byte first
+    Byte 0     command: the operation, and the value size if it has one
+    Bytes 1-2  index, the first part of the address
+    Byte 3     subindex, the second part of the address
+    Bytes 4-7  value or abort code, with unused bytes set to 00
+
+Command byte: bits 7-5 select the operation, and bits 3-2 count the unused
+value bytes
+    Command  Bits       Meaning
+    2F       0010 1111  write request, 1 byte (3 unused)
+    2B       0010 1011  write request, 2 bytes (2 unused)
+    23       0010 0011  write request, 4 bytes (0 unused)
+    60       0110 0000  write reply: value stored
+    40       0100 0000  read request (the size comes from the object)
+    4F       0100 1111  read reply, 1 byte (3 unused)
+    4B       0100 1011  read reply, 2 bytes (2 unused)
+    43       0100 0011  read reply, 4 bytes (0 unused)
+    80       1000 0000  abort reply: bytes 4-7 hold the abort code
+
+To send a request, join its ID and bytes with no spaces, as in the first write:
     cansend vcan0 601#2B40600006000000
+Run candump vcan0 in another terminal to see the reply.
 
-The 8 data bytes, with multi-byte fields low byte first:
-    Byte 0:    command, set by the register's size (2F = 1 byte, 2B = 2 bytes,
-               23 = 4 bytes)
-    Bytes 1-2: index (40 60 = 0x6040)
-    Byte 3:    subindex (00)
-    Bytes 4-7: value, with unused bytes set to 00 (06 00 00 00 = 0x0006)
+Write: store Controlword = 0x0006 at 0x6040
+    Request  601  2B 40 60 00 06 00 00 00
+    Reply    581  60 40 60 00 00 00 00 00
 
-The reply arrives on CAN ID 581:
-    60 means the value was stored.
-    80 means the write was refused, and bytes 4-7 hold the abort code:
-        0x06020000  the index and subindex do not exist
-        0x06010002  the register is read-only
-        0x06070010  the size does not match the register
+    2B           write 2 bytes
+    40 60        index 0x6040, low byte first
+    00           subindex 0x00
+    06 00        value 0x0006, low byte first
+    00 00        unused
+    60           the reply: stored
+    40 60 00     the reply repeats the address, so the host can match it
+    00 00 00 00  a successful write returns no data
 
-Only Controlword (0x6040) is writable today. Written values are lost when the
-emulator stops, and writing Controlword does not change the Statusword yet.
-There is no SDO read yet, so the emulator's printed output and the reply are
-the only confirmation of a write.
+Write: address does not exist
+    Request  601  2B 00 20 00 01 00 00 00
+    Reply    581  80 00 20 00 00 00 02 06
+    Abort code 0x06020000, sent low byte first as 00 00 02 06.
+
+Write: register is read-only (Statusword)
+    Request  601  2B 41 60 00 01 00 00 00
+    Reply    581  80 41 60 00 02 00 01 06
+    Abort code 0x06010002.
+
+Write: size does not match the register (4 bytes to 2-byte Controlword)
+    Request  601  23 40 60 00 01 00 00 00
+    Reply    581  80 40 60 00 10 00 07 06
+    Abort code 0x06070010.
+
+Write: 1 byte to the read-only Error Register
+    Request  601  2F 01 10 00 01 00 00 00
+    Reply    581  80 01 10 00 02 00 01 06
+    Abort code 0x06010002. The read-only check runs before the size check. No
+    1-byte or 4-byte register is writable yet, so 2F and 23 cannot store a
+    value today.
+
+How the emulator handles a write, in emulator.py:
+    1. main() matches CAN ID 601 and calls handle_sdo_request.
+    2. decode_sdo_write checks for 8 bytes and a known command, then extracts
+       the index, subindex, value and size.
+    3. apply_sdo_write checks that the object exists, is writable and has the
+       right size, in that order, then stores the value in OBJECTS.
+    4. send_sdo_reply sends 60, or 80 with the abort code.
+
+Read: Statusword at 0x6041 (not built, values are the emulator's startup values)
+    Request  601  40 41 60 00 00 00 00 00
+    Reply    581  4B 41 60 00 40 01 00 00
+
+    40           read
+    41 60 00     address 0x6041, subindex 0x00
+    00 00 00 00  a read request carries no data
+    4B           the reply: 2 bytes follow
+    40 01        value 0x0140, low byte first
+    00 00        unused
+
+Read: other reply sizes (not built)
+    1 byte, Error Register at 0x1001
+    Request  601  40 01 10 00 00 00 00 00
+    Reply    581  4F 01 10 00 00 00 00 00
+
+    4 bytes, Device Type at 0x1000, value 0x00020192
+    Request  601  40 00 10 00 00 00 00 00
+    Reply    581  43 00 10 00 92 01 02 00
+
+Today the emulator answers every read with no reply. It prints "SDO unsupported",
+so a host waiting for the value will time out. A real EPOS2 answers a read of a
+missing object with an 80 abort.
+
+Other limits:
+    Only Controlword (0x6040) is writable today.
+    Written values are lost when the emulator stops.
+    Writing Controlword does not change the Statusword yet.
+    Command 22 (a write with no stated size) is valid on a real EPOS2, but the
+    emulator treats it as unsupported.
+    A real EPOS2 can use abort code 0x06090011 for a wrong subindex. The
+    emulator always sends 0x06020000 for a missing address.
