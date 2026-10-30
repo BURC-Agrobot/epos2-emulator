@@ -10,8 +10,9 @@ command byte selects read or write, the index and subindex form the address,
 and the remaining bytes carry the data. Host and device are separate computers
 with no shared clock, so each access is an asynchronous request and reply.
 
-So far the emulator only listens on the bus and prints each frame it receives.
-It does not answer SDOs or use the object dictionary yet.
+So far the emulator prints each frame it receives and accepts SDO writes of 1,
+2 or 4 bytes to the object dictionary. SDO reads and multi-frame transfers are
+not built yet: it prints "SDO unsupported" and sends no reply.
 
 Setup (once, Ubuntu)
 --------------------
@@ -84,3 +85,28 @@ Starts at is the value held at startup.
     Stored:    Python int
     Starts at: 0x0140 (the spec gives no default: this is the "Switch On
                Disabled" state with offset current measured, bits 8 and 6)
+
+Updating a register
+-------------------
+With the emulator running, send an SDO write to node 1 on CAN ID 601, and watch
+the reply with candump vcan0 in another terminal:
+    cansend vcan0 601#2B40600006000000
+
+The 8 data bytes, with multi-byte fields low byte first:
+    Byte 0:    command, set by the register's size (2F = 1 byte, 2B = 2 bytes,
+               23 = 4 bytes)
+    Bytes 1-2: index (40 60 = 0x6040)
+    Byte 3:    subindex (00)
+    Bytes 4-7: value, with unused bytes set to 00 (06 00 00 00 = 0x0006)
+
+The reply arrives on CAN ID 581:
+    60 means the value was stored.
+    80 means the write was refused, and bytes 4-7 hold the abort code:
+        0x06020000  the index and subindex do not exist
+        0x06010002  the register is read-only
+        0x06070010  the size does not match the register
+
+Only Controlword (0x6040) is writable today. Written values are lost when the
+emulator stops, and writing Controlword does not change the Statusword yet.
+There is no SDO read yet, so the emulator's printed output and the reply are
+the only confirmation of a write.
