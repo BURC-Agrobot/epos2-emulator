@@ -1,0 +1,11 @@
+# Local agent instructions, kept out of the repo
+AGENTS.md
+CLAUDE.md
+.claude/
+
+# Python virtual environment and bytecode cache
+.venv/
+__pycache__/
+
+# Vendor datasheets, downloaded locally and not redistributed
+datasheets/
