@@ -76,20 +76,23 @@ motor = Motor()
 setpoint_acknowledged = False
 
 
-# Print one register's address, access, name and value in hex and binary
-def print_register(index: int, subindex: int, entry: Entry) -> None:
+# Print one register's address, access, name and value in hex, and optionally binary
+def print_register(index: int, subindex: int, entry: Entry, show_binary: bool = False) -> None:
     access = "RW" if entry.writable else "RO"
     # Pad the hex value to its full width: two digits per byte
     hex_digits = entry.size_bytes * 2
-    # Pad the binary value to its full width: eight bits per byte, plus one
-    # underscore between each group of four bits
-    binary_bits = entry.size_bytes * 8
-    binary_width = binary_bits + binary_bits // 4 - 1
     raw = entry.to_bus()
+    binary = ""
+    if show_binary:
+        # Pad the binary value to its full width: eight bits per byte, plus one
+        # underscore between each group of four bits
+        binary_bits = entry.size_bytes * 8
+        binary_width = binary_bits + binary_bits // 4 - 1
+        binary = f" 0b{raw:0{binary_width}_b}"
     # Show signed registers in decimal too, since their hex is hard to read
     decimal = f" ({entry.value})" if entry.signed else ""
     print(f"  0x{index:04X} sub 0x{subindex:02X} {access} {entry.name} = "
-          f"0x{raw:0{hex_digits}X} 0b{raw:0{binary_width}_b}{decimal}")
+          f"0x{raw:0{hex_digits}X}{binary}{decimal}")
 
 
 # Print every register and its current value, as a debugging view of the device
@@ -116,10 +119,11 @@ def handle_command(line: str) -> None:
         print_registers()
     elif words == ["help"]:
         print("Commands:")
-        print("  regs        print all registers")
-        print("  reg 0x6041  print one register (subindex 0x00)")
-        print("  help        list the commands")
-    elif words[0] == "reg" and len(words) == 2:
+        print("  regs           print all registers")
+        print("  reg 0x6041     print one register (subindex 0x00)")
+        print("  reg 0x6041 -b  also print its value in binary")
+        print("  help           list the commands")
+    elif words[0] == "reg" and (len(words) == 2 or words[2:] == ["-b"]) and not words[1].startswith("-"):
         # Read the index as hex, with or without the 0x prefix
         try:
             index = int(words[1], 16)
@@ -130,7 +134,7 @@ def handle_command(line: str) -> None:
         if entry is None:
             print(f"No register at index 0x{index:04X} sub 0x00")
             return
-        print_register(index, 0x00, entry)
+        print_register(index, 0x00, entry, show_binary=len(words) == 3)
     else:
         print(f"Unknown command: {line.strip()} (type help for a list)")
 

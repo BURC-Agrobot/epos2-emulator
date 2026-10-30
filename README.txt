@@ -29,11 +29,15 @@ Run only one emulator per bus, or the host gets duplicate replies.
 Terminal commands
 -----------------
 Type these at the >>> prompt. They send nothing on the CAN bus.
-    regs        print all registers
-    reg 0x6041  print one register (subindex 0x00, with or without the 0x)
-    help        list the commands
+    regs           print all registers
+    reg 0x6041     print one register (subindex 0x00, with or without the 0x)
+    reg 0x6041 -b  also print its value in binary
+    help           list the commands
 
 All registers also print at startup and after each stored write:
+    0x6041 sub 0x00 RO Statusword = 0x0140
+
+With -b:
     0x6041 sub 0x00 RO Statusword = 0x0140 0b0000_0001_0100_0000
 
 Object dictionary
