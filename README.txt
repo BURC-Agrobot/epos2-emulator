@@ -12,8 +12,8 @@ with no shared clock, so each access is an asynchronous request and reply.
 
 So far the emulator prints each frame it receives and answers single-frame SDO
 reads and writes of the object dictionary. Multi-frame transfers are not built
-yet: it prints "SDO unsupported" and sends no reply. The drive states are
-defined but not connected to anything yet.
+yet: it prints "SDO unsupported" and sends no reply. Controlword writes move the
+drive through its states, and the Statusword reports the result.
 
 Setup (once, Ubuntu)
 --------------------
@@ -92,8 +92,8 @@ Starts at is the value held at startup.
 0x6040 sub 0x00  Controlword (read/write)
     Role:      Control
     Carries host commands to the drive state machine, with bits for device
-    control and operating mode supervision. The emulator only stores this
-    value so far and does not act on it.
+    control and operating mode supervision. The emulator acts on the device
+    control bits (see Drive states) and ignores the rest.
     Sent:      UNSIGNED16, 2 bytes
     Stored:    Python int
     Starts at: 0x0000 (the spec gives no default, so no command)
@@ -101,7 +101,8 @@ Starts at is the value held at startup.
 0x6041 sub 0x00  Statusword (read-only)
     Role:      Status
     Reports the drive's current state, with bits for the state machine and
-    the operating mode. The emulator does not update this value yet.
+    the operating mode. The emulator sets it to the value for the current
+    drive state (see Drive states).
     Sent:      UNSIGNED16, 2 bytes
     Stored:    Python int
     Starts at: 0x0140 (the spec gives no default: this is the "Switch On
@@ -159,7 +160,8 @@ Abort codes, sent low byte first in bytes 4-7 of an 80 reply:
     0x06070010  10 00 07 06  the size does not match the register
 
 Command table: run these in order on a freshly started emulator, since the
-write changes the Controlword value read in the last row.
+write changes the Controlword value read in the last row. It also moves the drive
+to Ready to Switch On, so the Statusword reads 0x0121 afterwards.
 
     Action                  Command                             Reply on 581             Result
     Read Device Type        cansend vcan0 601#4000100000000000  43 00 10 00 92 01 02 00  0x00020192
@@ -193,7 +195,6 @@ Limits:
     and gets no reply, so a host waiting for one will time out.
     Only Controlword (0x6040) is writable today.
     Written values are lost when the emulator stops.
-    Writing Controlword does not change the Statusword yet.
     Command 22 (a write with no stated size) is valid on a real EPOS2, but the
     emulator treats it as unsupported.
     A real EPOS2 can use abort code 0x06090011 for a wrong subindex. The
@@ -210,10 +211,12 @@ for each, from the EPOS2 Firmware Specification, Table 3-4, page 3-15. The spec
 marks some bits as "x", meaning they are not part of the state, and the values
 here set them to 0.
 
-Nothing uses this table yet: the emulator stays in Switch On Disabled, and
-Controlword writes do not change its state.
+The emulator starts in Switch On Disabled. After each stored Controlword write,
+decode_controlword names the command, TRANSITIONS gives the next state, and the
+Statusword is set to that state's value. A command that does not apply in the
+current state is still stored and acknowledged, but the state stays the same.
 
-    State                             Statusword
+    State                            Statusword
     Start                             0x0000
     Not Ready to Switch On            0x0100
     Switch On Disabled                0x0140
@@ -226,3 +229,49 @@ Controlword writes do not change its state.
     Fault Reaction Active (disabled)  0x010F
     Fault Reaction Active (enabled)   0x011F
     Fault                             0x0108
+
+Commands, from the low byte of the Controlword (Table 3-6, page 3-17), where x
+means the bit is ignored:
+    Command            Low byte   Example
+    Shutdown           0xxx x110  0x0006
+    Switch On          0xxx 0111  0x0007
+    Enable Operation   0xxx 1111  0x000F
+    Disable Operation  0xxx 0111  0x0007 (Switch On, sent in Operation Enable)
+    Disable Voltage    0xxx xx0x  0x0000
+    Quickstop          0xxx x01x  0x0002
+    Fault Reset        bit 7 goes from 0 to 1  0x0080
+
+Transitions (Table 3-5, page 3-16):
+    From                Command            To
+    Switch On Disabled  Shutdown           Ready to Switch On
+    Ready to Switch On  Switch On          Switched On
+    Ready to Switch On  Enable Operation   Operation Enable
+    Ready to Switch On  Disable Voltage    Switch On Disabled
+    Ready to Switch On  Quickstop          Switch On Disabled
+    Switched On         Shutdown           Ready to Switch On
+    Switched On         Enable Operation   Operation Enable
+    Switched On         Disable Voltage    Switch On Disabled
+    Switched On         Quickstop          Switch On Disabled
+    Operation Enable    Disable Operation  Switched On
+    Operation Enable    Shutdown           Ready to Switch On
+    Operation Enable    Disable Voltage    Switch On Disabled
+    Operation Enable    Quickstop          Quickstop Active
+    Quickstop Active    Disable Voltage    Switch On Disabled
+    Quickstop Active    Enable Operation   Operation Enable
+    Fault               Fault Reset        Switch On Disabled
+
+Enabling the drive from startup:
+    Action            Command                             Statusword afterwards
+    Shutdown          cansend vcan0 601#2B40600006000000  0x0121
+    Switch On         cansend vcan0 601#2B40600007000000  0x0123
+    Enable Operation  cansend vcan0 601#2B4060000F000000  0x0137
+
+Limits:
+    Refresh and Measure Init take no time, so Enable Operation goes straight to
+    Operation Enable and the Statusword never reports them.
+    Nothing causes a fault yet, so Fault and Fault Reaction Active cannot be
+    reached. Fault Reset only has an effect in Fault.
+    Start and Not Ready to Switch On are skipped: the emulator starts up already
+    initialized.
+    Quickstop Active only ends on a command, since there is no motion to stop.
+    The other Controlword bits, such as those for operating modes, are ignored.

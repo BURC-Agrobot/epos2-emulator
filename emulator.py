@@ -5,6 +5,7 @@ import sys
 
 import can
 
+from drive_state import decode_controlword, STATE_STATUSWORDS, TRANSITIONS
 from object_dictionary import Entry, OBJECTS
 
 # Name of the Linux CAN interface to use (vcan0 is virtual, can0 is real)
@@ -35,6 +36,13 @@ SDO_READ_REPLY = {1: 0x4F, 2: 0x4B, 4: 0x43}
 ABORT_READ_ONLY = 0x06010002
 ABORT_NO_OBJECT = 0x06020000
 ABORT_LENGTH_MISMATCH = 0x06070010
+
+# Addresses of the registers that drive the state machine
+CONTROLWORD_ADDRESS = (0x6040, 0x00)
+STATUSWORD_ADDRESS = (0x6041, 0x00)
+
+# Current drive state, matching the Statusword's starting value
+drive_state = "Switch On Disabled"
 
 
 # Print one register's address, access, name and value in hex and binary
@@ -115,6 +123,20 @@ def decode_sdo_write(data: bytes) -> tuple[int, int, int, int] | None:
     return index, subindex, value, size_bytes
 
 
+# Act on a stored Controlword write: change state and report it in the Statusword
+def update_drive_state(previous: int, controlword: int) -> None:
+    global drive_state
+    command = decode_controlword(previous, controlword) or "no command"
+    new_state = TRANSITIONS.get((drive_state, command))
+    # A command that does not apply in this state leaves the drive where it is
+    if new_state is None:
+        print(f"Controlword 0x{controlword:04X}: {command}, staying in {drive_state}")
+        return
+    print(f"Controlword 0x{controlword:04X}: {command}, {drive_state} -> {new_state}")
+    drive_state = new_state
+    OBJECTS[STATUSWORD_ADDRESS].value = STATE_STATUSWORDS[new_state]
+
+
 # Store a written value in OBJECTS, or return the abort code if it is refused
 def apply_sdo_write(index: int, subindex: int, value: int, size_bytes: int) -> int | None:
     # The address must exist in the object dictionary
@@ -128,7 +150,10 @@ def apply_sdo_write(index: int, subindex: int, value: int, size_bytes: int) -> i
     if size_bytes != entry.size_bytes:
         return ABORT_LENGTH_MISMATCH
     # Every check passed, so the write takes effect
+    previous = entry.value
     entry.value = value
+    if (index, subindex) == CONTROLWORD_ADDRESS:
+        update_drive_state(previous, value)
     return None
 
 
