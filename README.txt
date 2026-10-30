@@ -13,7 +13,8 @@ with no shared clock, so each access is an asynchronous request and reply.
 So far the emulator prints each frame it receives and answers single-frame SDO
 reads and writes of the object dictionary. Multi-frame transfers are not built
 yet: it prints "SDO unsupported" and sends an abort reply. Controlword writes move
-the drive through its states, and the Statusword reports the result.
+the drive through its states, and the Statusword reports the result. In Profile
+Position Mode, a simple motor model moves to the positions the host commands.
 
 Setup (once, Ubuntu)
 --------------------
@@ -93,7 +94,8 @@ Starts at is the value held at startup.
     Role:      Control
     Carries host commands to the drive state machine, with bits for device
     control and operating mode supervision. The emulator acts on the device
-    control bits (see Drive states) and ignores the rest.
+    control bits (see Drive states) and the Profile Position Mode bits (see
+    Motion), and ignores the rest.
     Sent:      UNSIGNED16, 2 bytes
     Stored:    Python int
     Starts at: 0x0000 (the spec gives no default, so no command)
@@ -102,11 +104,76 @@ Starts at is the value held at startup.
     Role:      Status
     Reports the drive's current state, with bits for the state machine and
     the operating mode. The emulator sets it to the value for the current
-    drive state (see Drive states).
+    drive state (see Drive states), plus the motion bits (see Motion).
     Sent:      UNSIGNED16, 2 bytes
     Stored:    Python int
     Starts at: 0x0140 (the spec gives no default: this is the "Switch On
                Disabled" state with offset current measured, bits 8 and 6)
+
+0x6060 sub 0x00  Modes of Operation (read/write)
+    Role:      Control
+    Selects the operating mode. Any mode in the spec's table is accepted, but
+    only 1 (Profile Position Mode) moves the motor.
+    Sent:      INTEGER8, 1 byte
+    Stored:    Python int
+    Starts at: 1
+
+0x6061 sub 0x00  Modes of Operation Display (read-only)
+    Role:      Status
+    Reports the operating mode in use. It follows 0x6060 at once.
+    Sent:      INTEGER8, 1 byte
+    Stored:    Python int
+    Starts at: 1
+
+0x6064 sub 0x00  Position Actual Value (read-only)
+    Role:      Status
+    The motor's position in quadcounts.
+    Sent:      INTEGER32, 4 bytes
+    Stored:    Python int
+    Starts at: 0 (the spec gives no default)
+
+0x606C sub 0x00  Velocity Actual Value (read-only)
+    Role:      Status
+    The motor's velocity in rpm, negative when moving backwards.
+    Sent:      INTEGER32, 4 bytes
+    Stored:    Python int
+    Starts at: 0 (the spec gives no default)
+
+0x607A sub 0x00  Target Position (read/write)
+    Role:      Storage
+    The position to move to, in quadcounts. Writing it does nothing until the
+    host sets the new setpoint bit in Controlword.
+    Sent:      INTEGER32, 4 bytes
+    Stored:    Python int
+    Starts at: 0
+
+0x6081 sub 0x00  Profile Velocity (read/write)
+    Role:      Storage
+    The cruising speed of a move, in rpm. Must be above zero.
+    Sent:      UNSIGNED32, 4 bytes
+    Stored:    Python int
+    Starts at: 1000
+
+0x6083 sub 0x00  Profile Acceleration (read/write)
+    Role:      Storage
+    The ramp up to speed, in rpm/s. Must be above zero.
+    Sent:      UNSIGNED32, 4 bytes
+    Stored:    Python int
+    Starts at: 10000
+
+0x6084 sub 0x00  Profile Deceleration (read/write)
+    Role:      Storage
+    The ramp down to a stop, in rpm/s. Must be above zero.
+    Sent:      UNSIGNED32, 4 bytes
+    Stored:    Python int
+    Starts at: 10000
+
+0x6085 sub 0x00  Quickstop Deceleration (read/write)
+    Role:      Storage
+    The ramp down during a Quickstop, in rpm/s. Must be above zero.
+    Sent:      UNSIGNED32, 4 bytes
+    Stored:    Python int
+    Starts at: 10000
 
 Sending commands
 ----------------
@@ -159,6 +226,7 @@ Abort codes, sent low byte first in bytes 4-7 of an 80 reply:
     0x06020000  00 00 02 06  the index and subindex do not exist
     0x06010002  02 00 01 06  the register is read-only
     0x06070010  10 00 07 06  the size does not match the register
+    0x06090030  30 00 09 06  the value is outside the register's allowed range
 
 Command table: run these in order on a freshly started emulator, since the
 write changes the Controlword value read in the last row. It also moves the drive
@@ -180,8 +248,7 @@ to Ready to Switch On, so the Statusword reads 0x0121 afterwards.
     Read Controlword again  cansend vcan0 601#4040600000000000  4B 40 60 00 06 00 00 00  0x0006
 
 The read-only check runs before the size check, which is why the 1-byte write to
-the Error Register gets a read-only abort. No 1-byte or 4-byte register is
-writable yet, so 2F and 23 cannot store a value today.
+the Error Register gets a read-only abort.
 
 How the emulator handles a request, in emulator.py:
     1. main() matches data frames on CAN ID 601 and calls handle_sdo_request.
@@ -190,8 +257,9 @@ How the emulator handles a request, in emulator.py:
     4. For a write, decode_sdo_write checks for a known command, then extracts
        the index, subindex, value and size. An unknown command is refused with
        abort 0x05040001.
-       apply_sdo_write then checks that the object exists, is writable and has
-       the right size, in that order, and stores the value in OBJECTS.
+       apply_sdo_write then checks that the object exists, is writable, has the
+       right size and allows the value, in that order, and stores the value in
+       OBJECTS.
     5. send_sdo_reply sends the reply: 4F, 4B, 43 or 60 on success, or 80 with
        the abort code.
 
@@ -202,7 +270,6 @@ Every request on 601 gets exactly one reply, with two exceptions:
 Limits:
     A refused frame's reply repeats bytes 1-3 of the request as the address, and
     any bytes a short frame does not have are sent as 00.
-    Only Controlword (0x6040) is writable today.
     Written values are lost when the emulator stops.
     Command 22 (a write with no stated size) is valid on a real EPOS2, but the
     emulator refuses it as an unknown command. Multi-frame transfer commands get
@@ -225,7 +292,8 @@ here set them to 0.
 
 The emulator starts in Switch On Disabled. After each stored Controlword write,
 decode_controlword names the command, TRANSITIONS gives the next state, and the
-Statusword is set to that state's value. A command that does not apply in the
+Statusword is set to that state's value, plus the motion bits in Operation Enable
+and Quickstop Active (see Motion). A command that does not apply in the
 current state is still stored and acknowledged, but the state stays the same.
 
     State                            Statusword
@@ -276,7 +344,9 @@ Enabling the drive from startup:
     Action            Command                             Statusword afterwards
     Shutdown          cansend vcan0 601#2B40600006000000  0x0121
     Switch On         cansend vcan0 601#2B40600007000000  0x0123
-    Enable Operation  cansend vcan0 601#2B4060000F000000  0x0137
+    Enable Operation  cansend vcan0 601#2B4060000F000000  0x0537
+
+The last value is Operation Enable (0x0137) plus the target reached bit (0x0400).
 
 Limits:
     Refresh and Measure Init take no time, so Enable Operation goes straight to
@@ -285,5 +355,61 @@ Limits:
     reached. Fault Reset only has an effect in Fault.
     Start and Not Ready to Switch On are skipped: the emulator starts up already
     initialized.
-    Quickstop Active only ends on a command, since there is no motion to stop.
-    The other Controlword bits, such as those for operating modes, are ignored.
+    Quickstop Active only ends on a command, even once the motor has stopped.
+    The Controlword bits that no state or mode uses are ignored.
+
+Motion
+------
+A move follows Profile Position Mode, from the EPOS2 Firmware Specification,
+section 5.3. Position is in quadcounts, velocity in rpm and acceleration in rpm/s.
+The model in motor.py assumes 2000 quadcounts per revolution (a 500-pulse encoder)
+and updates every 10 ms.
+
+To make a move, with the drive in Operation Enable:
+    1. Write the position to Target Position (0x607A).
+    2. Set the new setpoint bit in Controlword. The drive takes the position and
+       sets the setpoint acknowledge bit in Statusword.
+    3. Clear the new setpoint bit. The drive clears the acknowledge bit.
+    4. Poll Statusword until the target reached bit is set.
+
+Example: enable the drive (see Drive states), then move to position 20000
+    Action            Command                             Statusword afterwards
+    Write target      cansend vcan0 601#237A6000204E0000  0x0537
+    New setpoint      cansend vcan0 601#2B4060001F000000  0x1137
+    Clear setpoint    cansend vcan0 601#2B4060000F000000  0x0137
+    Read position     cansend vcan0 601#4064600000000000  moving, then 0x0537
+
+These values hold during the move, which takes about 0.7 seconds at the default
+profile. Typed by hand, the move may finish first, adding the target reached bit:
+0x1537 after the new setpoint, and 0x0537 after clearing it.
+
+Controlword bits, from Table 5-16, page 5-38:
+    Bit  Name                    Effect
+    4    New setpoint            0 to 1 takes the Target Position
+    5    Change set immediately  1 interrupts this move, 0 starts after it
+    6    Abs / rel               1 adds the target to the current position
+    8    Halt                    1 stops with Profile Deceleration, 0 resumes
+
+Statusword bits, from Table 5-19, page 5-39:
+    Bit  Name                 Set when
+    10   Target reached       the motor is stopped, with no move left or by Halt
+    12   Setpoint acknowledge a setpoint was taken and bit 4 is still set
+
+The ways a move can end early:
+    Quickstop               ramps down with Quickstop Deceleration, and drops the move
+    Disable Operation,
+    Shutdown or
+    Disable Voltage         stops at once and drops the move
+
+Limits:
+    The position follows the profile exactly, so there is no following error and
+    Position Window (0x6067) does not exist yet.
+    Moves are always trapezoidal, and Motion Profile Type (0x6086) does not exist
+    yet. Neither does Maximal Profile Velocity (0x607F), so nothing limits a
+    profile's speed or ramps beyond being above zero.
+    Only one move can wait behind the current one, and a newer one replaces it.
+    Endless movement (bit 15) is ignored. Changing mode during a move does not
+    stop it.
+    Setpoints in any other mode are ignored, and those modes do not move the motor.
+    Target reached and setpoint acknowledge read as 0 outside Operation Enable and
+    Quickstop Active. The spec leaves those bits open in other states.
