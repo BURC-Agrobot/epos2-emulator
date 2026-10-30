@@ -10,9 +10,9 @@ command byte selects read or write, the index and subindex form the address,
 and the remaining bytes carry the data. Host and device are separate computers
 with no shared clock, so each access is an asynchronous request and reply.
 
-So far the emulator prints each frame it receives and accepts SDO writes of 1,
-2 or 4 bytes to the object dictionary. SDO reads and multi-frame transfers are
-not built yet: it prints "SDO unsupported" and sends no reply.
+So far the emulator prints each frame it receives and answers single-frame SDO
+reads and writes of the object dictionary. Multi-frame transfers are not built
+yet: it prints "SDO unsupported" and sends no reply.
 
 Setup (once, Ubuntu)
 --------------------
@@ -33,6 +33,10 @@ Check it with two terminals:
 Run
 ---
     .venv/bin/python emulator.py
+
+The emulator prints every register and its current value at startup and after
+each stored write. This view is only in its terminal. To get one register's
+value over CAN, use an SDO read.
 
 Object dictionary
 -----------------
@@ -97,7 +101,7 @@ Notes, section 10.4. All frames here are for node 1.
 
 Status in this emulator:
     Write: built for 2F, 2B and 23, as shown below.
-    Read:  not built. The read frames show what a real EPOS2 sends.
+    Read:  built for command 40, as shown below.
 
 CAN ID: the channel
     601  request, host to device (0x600 + node ID)
@@ -169,7 +173,7 @@ How the emulator handles a write, in emulator.py:
        right size, in that order, then stores the value in OBJECTS.
     4. send_sdo_reply sends 60, or 80 with the abort code.
 
-Read: Statusword at 0x6041 (not built, values are the emulator's startup values)
+Read: Statusword at 0x6041 (replies here show the emulator's startup values)
     Request  601  40 41 60 00 00 00 00 00
     Reply    581  4B 41 60 00 40 01 00 00
 
@@ -180,7 +184,7 @@ Read: Statusword at 0x6041 (not built, values are the emulator's startup values)
     40 01        value 0x0140, low byte first
     00 00        unused
 
-Read: other reply sizes (not built)
+Read: other reply sizes
     1 byte, Error Register at 0x1001
     Request  601  40 01 10 00 00 00 00 00
     Reply    581  4F 01 10 00 00 00 00 00
@@ -189,11 +193,20 @@ Read: other reply sizes (not built)
     Request  601  40 00 10 00 00 00 00 00
     Reply    581  43 00 10 00 92 01 02 00
 
-Today the emulator answers every read with no reply. It prints "SDO unsupported",
-so a host waiting for the value will time out. A real EPOS2 answers a read of a
-missing object with an 80 abort.
+Read: address does not exist
+    Request  601  40 00 20 00 00 00 00 00
+    Reply    581  80 00 20 00 00 00 02 06
+    Abort code 0x06020000.
 
-Other limits:
+How the emulator handles a read, in emulator.py:
+    1. handle_sdo_request spots command 40 and calls handle_sdo_read.
+    2. handle_sdo_read looks up the address in OBJECTS.
+    3. send_sdo_reply sends 4F, 4B or 43 with the value, or 80 with the abort
+       code.
+
+Limits:
+    Any other command, or a frame without 8 data bytes, prints "SDO unsupported"
+    and gets no reply, so a host waiting for one will time out.
     Only Controlword (0x6040) is writable today.
     Written values are lost when the emulator stops.
     Writing Controlword does not change the Statusword yet.

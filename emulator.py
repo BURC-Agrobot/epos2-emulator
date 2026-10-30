@@ -21,12 +21,26 @@ SDO_WRITE_SIZE_BYTES = {0x2F: 1, 0x2B: 2, 0x23: 4}
 # Reply command bytes (Application Notes 10.4.1): write accepted, and write refused
 SDO_WRITE_OK = 0x60
 SDO_ABORT = 0x80
+# Host command byte for a read, which needs no size (Application Notes 10.4.1)
+SDO_READ_REQUEST = 0x40
+# Reply command byte for a read, chosen by the size of the value being returned
+# (Application Notes 10.4.1, expedited transfer, scs = 2)
+SDO_READ_REPLY = {1: 0x4F, 2: 0x4B, 4: 0x43}
 
 # Abort codes, sent back when a write is refused
 # Communication Guide 8.1, page 8-47
 ABORT_READ_ONLY = 0x06010002
 ABORT_NO_OBJECT = 0x06020000
 ABORT_LENGTH_MISMATCH = 0x06070010
+
+
+# Print every register and its current value, as a debugging view of the device
+def print_registers() -> None:
+    print("Registers:")
+    for (index, subindex), entry in OBJECTS.items():
+        access = "RW" if entry.writable else "RO"
+        # Pad the value to its full width: two hex digits per byte
+        print(f"  0x{index:04X} sub 0x{subindex:02X} {access} {entry.name} = 0x{entry.value:0{entry.size_bytes * 2}X}")
 
 
 # Pull the fields out of an SDO write request, or return None if it is not one
@@ -80,8 +94,29 @@ def send_sdo_reply(bus: can.BusABC, command: int, index: int, subindex: int, pay
         print(f"SDO reply failed to send: {error}")
 
 
-# Handle one SDO request: decode it, apply it, and reply to the host
+# Handle one SDO read: look up the register and reply with its value
+def handle_sdo_read(bus: can.BusABC, data: bytes) -> None:
+    # Bytes 1-2 are the index, low byte first, and byte 3 is the subindex
+    index = int.from_bytes(data[1:3], "little")
+    subindex = data[3]
+    print(f"SDO read index=0x{index:04X} sub=0x{subindex:02X}")
+    entry = OBJECTS.get((index, subindex))
+    # A missing address gets an abort, the same as a write to it
+    if entry is None:
+        print(f"SDO read refused, sending abort 0x{ABORT_NO_OBJECT:08X} on 0x{SDO_RESPONSE_ID:03X}")
+        send_sdo_reply(bus, SDO_ABORT, index, subindex, ABORT_NO_OBJECT)
+        return
+    # The reply command tells the host how many value bytes to use
+    print(f"SDO read ok, sending 0x{entry.value:X} on 0x{SDO_RESPONSE_ID:03X}")
+    send_sdo_reply(bus, SDO_READ_REPLY[entry.size_bytes], index, subindex, entry.value)
+
+
+# Handle one SDO request: read or write a register, and reply to the host
 def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
+    # Reads are identified first, since they have no size or value to decode
+    if len(data) == SDO_FRAME_SIZE_BYTES and data[0] == SDO_READ_REQUEST:
+        handle_sdo_read(bus, data)
+        return
     # Unsupported requests were already reported, and get no reply yet
     request = decode_sdo_write(data)
     if request is None:
@@ -93,6 +128,8 @@ def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
     if abort_code is None:
         print(f"SDO write stored, sending ok on 0x{SDO_RESPONSE_ID:03X}")
         send_sdo_reply(bus, SDO_WRITE_OK, index, subindex, 0)
+        # Show the new register values after every change
+        print_registers()
     else:
         print(f"SDO write refused, sending abort 0x{abort_code:08X} on 0x{SDO_RESPONSE_ID:03X}")
         send_sdo_reply(bus, SDO_ABORT, index, subindex, abort_code)
@@ -102,6 +139,8 @@ def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
 def main() -> None:
     # Announce startup so we can see the program actually ran
     print(f"EPOS2 emulator starting on {CAN_CHANNEL}")
+    # Show the startup register values
+    print_registers()
 
     # Open the CAN interface through Linux SocketCAN
     # The "with" block closes the interface automatically when we exit
