@@ -6,7 +6,8 @@ import time
 
 import can
 
-from drive_state import decode_controlword, STATE_STATUSWORDS, TRANSITIONS
+from drive_state import (decode_controlword, state_from_statusword, STATE_STATUSWORDS,
+                         STATUSWORD_BITS, TRANSITIONS)
 from motor import counts_to_rpm, Motor, rpm_to_counts
 from object_dictionary import Entry, OBJECTS
 
@@ -158,6 +159,17 @@ def print_registers() -> None:
         print_register(index, subindex, entry)
 
 
+# Print the drive's state and every set bit, as read from the Statusword
+def print_status() -> None:
+    statusword = OBJECTS[STATUSWORD_ADDRESS].value
+    print(f"State: {state_from_statusword(statusword) or 'Unknown'}")
+    print(f"Statusword: 0x{statusword:04X} 0b{statusword:019_b}")
+    print("Bits set:")
+    for bit, name in STATUSWORD_BITS.items():
+        if statusword & (1 << bit):
+            print(f"  {bit:2} {name}")
+
+
 # Print the prompt that invites a typed command
 def print_prompt() -> None:
     # Flush because the terminal only shows unfinished lines when told to
@@ -173,11 +185,14 @@ def handle_command(line: str) -> None:
         return
     if words == ["regs"]:
         print_registers()
+    elif words == ["status"]:
+        print_status()
     elif words == ["help"]:
         print("Commands:")
         print("  regs           print all registers")
         print("  reg 0x6041     print one register (subindex 0x00)")
         print("  reg 0x6041 -b  also print its value in binary")
+        print("  status         print the drive state and Statusword bits")
         print("  help           list the commands")
         print("  --help         explain the output")
     elif words == ["--help"]:

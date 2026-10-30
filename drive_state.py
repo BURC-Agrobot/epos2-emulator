@@ -20,6 +20,40 @@ STATE_STATUSWORDS: dict[str, int] = {
     "Fault": 0b0000_0001_0000_1000,
 }
 
+# The Statusword bits that show the state: 0-6, 8 and 14 (Spec 8.2.86, page 8-194)
+STATE_BITS_MASK = 0b0100_0001_0111_1111
+
+# Name of each Statusword bit, from Table 8-114, page 8-194
+# Bits 10, 12 and 13 depend on the operating mode: these are Profile Position's names
+STATUSWORD_BITS: dict[int, str] = {
+    15: "Position referenced to home position",
+    14: "Refresh cycle of power stage",
+    13: "Following error",
+    12: "Setpoint acknowledge",
+    11: "Internal limit active",
+    10: "Target reached",
+    9: "Remote",
+    8: "Offset current measured",
+    7: "Warning",
+    6: "Switch on disable",
+    # Clear in Quickstop Active, and set in Operation Enable (Table 3-4, page 3-15)
+    5: "Quickstop (set means not quick stopping)",
+    4: "Voltage enabled",
+    3: "Fault",
+    2: "Operation enable",
+    1: "Switched on",
+    0: "Ready to switch on",
+}
+
+
+# Name the state a Statusword reports, or return None if it matches no state
+def state_from_statusword(statusword: int) -> str | None:
+    for state, value in STATE_STATUSWORDS.items():
+        if value == statusword & STATE_BITS_MASK:
+            return state
+    return None
+
+
 # State after each command the host can send, from Table 3-5, page 3-16
 # A command missing from this table has no effect in that state
 # Enable Operation passes through Refresh and Measure Init (transitions 4, 20, 21),

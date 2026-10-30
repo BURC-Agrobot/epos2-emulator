@@ -32,6 +32,7 @@ Type these at the >>> prompt. They send nothing on the CAN bus.
     regs           print all registers
     reg 0x6041     print one register (subindex 0x00, with or without the 0x)
     reg 0x6041 -b  also print its value in binary
+    status         print the drive state and Statusword bits
     help           list the commands
     --help         explain the output (also: emulator.py --help)
 
