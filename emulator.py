@@ -1,8 +1,11 @@
 # EPOS2 50/5 emulator: pretends to be a maxon EPOS2 on a CAN bus
 
+import select
+import sys
+
 import can
 
-from object_dictionary import OBJECTS
+from object_dictionary import Entry, OBJECTS
 
 # Name of the Linux CAN interface to use (vcan0 is virtual, can0 is real)
 CAN_CHANNEL = "vcan0"
@@ -34,13 +37,54 @@ ABORT_NO_OBJECT = 0x06020000
 ABORT_LENGTH_MISMATCH = 0x06070010
 
 
+# Print one register's address, access, name and value in hex and binary
+def print_register(index: int, subindex: int, entry: Entry) -> None:
+    access = "RW" if entry.writable else "RO"
+    # Pad the hex value to its full width: two digits per byte
+    hex_digits = entry.size_bytes * 2
+    # Pad the binary value to its full width: eight bits per byte, plus one
+    # underscore between each group of four bits
+    binary_bits = entry.size_bytes * 8
+    binary_width = binary_bits + binary_bits // 4 - 1
+    print(f"  0x{index:04X} sub 0x{subindex:02X} {access} {entry.name} = "
+          f"0x{entry.value:0{hex_digits}X} 0b{entry.value:0{binary_width}_b}")
+
+
 # Print every register and its current value, as a debugging view of the device
 def print_registers() -> None:
     print("Registers:")
     for (index, subindex), entry in OBJECTS.items():
-        access = "RW" if entry.writable else "RO"
-        # Pad the value to its full width: two hex digits per byte
-        print(f"  0x{index:04X} sub 0x{subindex:02X} {access} {entry.name} = 0x{entry.value:0{entry.size_bytes * 2}X}")
+        print_register(index, subindex, entry)
+
+
+# Run one command typed into the emulator's terminal
+def handle_command(line: str) -> None:
+    # Split the line into words, so extra spaces do not matter
+    words = line.split()
+    # An empty line does nothing
+    if not words:
+        return
+    if words == ["regs"]:
+        print_registers()
+    elif words == ["help"]:
+        print("Commands:")
+        print("  regs        print all registers")
+        print("  reg 0x6041  print one register (subindex 0x00)")
+        print("  help        list the commands")
+    elif words[0] == "reg" and len(words) == 2:
+        # Read the index as hex, with or without the 0x prefix
+        try:
+            index = int(words[1], 16)
+        except ValueError:
+            print(f"Not a hex index: {words[1]}")
+            return
+        entry = OBJECTS.get((index, 0x00))
+        if entry is None:
+            print(f"No register at index 0x{index:04X} sub 0x00")
+            return
+        print_register(index, 0x00, entry)
+    else:
+        print(f"Unknown command: {line.strip()} (type help for a list)")
 
 
 # Pull the fields out of an SDO write request, or return None if it is not one
@@ -146,15 +190,30 @@ def main() -> None:
     # The "with" block closes the interface automatically when we exit
     with can.Bus(interface="socketcan", channel=CAN_CHANNEL) as bus:
         try:
-            # Wait for frames forever, one at a time
+            # The two inputs to watch: CAN frames and lines typed in the terminal
+            inputs = [bus, sys.stdin]
+            # Handle whichever input is ready, forever
             while True:
-                # Block until the next frame arrives on the bus
-                frame = bus.recv()
-                # Print the CAN ID and data bytes in hex, like candump
-                print(f"RX id=0x{frame.arbitration_id:03X} data={frame.data.hex(' ').upper()}")
-                # Only standard 11-bit frames with our request ID are SDOs for us
-                if frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id:
-                    handle_sdo_request(bus, bytes(frame.data))
+                # Block until at least one input has something to read
+                ready, _, _ = select.select(inputs, [], [])
+                if bus in ready:
+                    # A frame is waiting, so this returns without blocking
+                    frame = bus.recv(timeout=0)
+                    if frame is not None:
+                        # Print the CAN ID and data bytes in hex, like candump
+                        print(f"RX id=0x{frame.arbitration_id:03X} data={frame.data.hex(' ').upper()}")
+                        # Only standard 11-bit frames with our request ID are SDOs for us
+                        if frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id:
+                            handle_sdo_request(bus, bytes(frame.data))
+                if sys.stdin in ready:
+                    line = sys.stdin.readline()
+                    if line:
+                        handle_command(line)
+                    else:
+                        # End of input: stop watching it, or select would keep
+                        # reporting it as ready, and keep serving the bus
+                        print("Terminal input closed, CAN handling continues")
+                        inputs.remove(sys.stdin)
         except KeyboardInterrupt:
             # Stop cleanly when the user presses Ctrl+C
             print("\nEPOS2 emulator stopped")

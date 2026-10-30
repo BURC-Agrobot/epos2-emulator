@@ -12,7 +12,8 @@ with no shared clock, so each access is an asynchronous request and reply.
 
 So far the emulator prints each frame it receives and answers single-frame SDO
 reads and writes of the object dictionary. Multi-frame transfers are not built
-yet: it prints "SDO unsupported" and sends no reply.
+yet: it prints "SDO unsupported" and sends no reply. The drive states are
+defined but not connected to anything yet.
 
 Setup (once, Ubuntu)
 --------------------
@@ -34,9 +35,23 @@ Run
 ---
     .venv/bin/python emulator.py
 
+Seeing the registers
+--------------------
 The emulator prints every register and its current value at startup and after
-each stored write. This view is only in its terminal. To get one register's
-value over CAN, use an SDO read.
+each stored write. You can also type these commands into its terminal while it
+runs:
+    regs        print all registers
+    reg 0x6041  print one register (subindex 0x00, with or without the 0x)
+    help        list the commands
+
+These commands only look at the emulator's registers and send nothing on the
+CAN bus. Frame logs may print between your commands, since everything shares
+one terminal. To get a register's value over CAN, use an SDO read.
+
+Each line shows the index, subindex, access (RO or RW), name and current value
+in hex and binary, padded to the register's full width, with binary bits grouped
+in fours:
+    0x6041 sub 0x00 RO Statusword = 0x0140 0b0000_0001_0100_0000
 
 Object dictionary
 -----------------
@@ -90,119 +105,86 @@ Starts at is the value held at startup.
     Starts at: 0x0140 (the spec gives no default: this is the "Switch On
                Disabled" state with offset current measured, bits 8 and 6)
 
-SDO read and write
-------------------
+Sending commands
+----------------
 An SDO is a bus transaction carried in two CAN frames: the host sends one
-request, and the device sends one reply. The host is the initiator, and the
-device owning the object dictionary only ever responds. Unlike a CPU bus access,
-nothing happens on a shared clock: the host must wait for the reply and treat a
-missing one as a timeout. Frame formats below come from the EPOS2 Application
-Notes, section 10.4. All frames here are for node 1.
+request, and the device sends one reply. Unlike a CPU bus access, nothing
+happens on a shared clock: the host must wait for the reply and treat a missing
+one as a timeout. Frame formats come from the EPOS2 Application Notes, section
+10.4. All frames here are for node 1.
 
-Status in this emulator:
-    Write: built for 2F, 2B and 23, as shown below.
-    Read:  built for command 40, as shown below.
+Every command has the same syntax, written as hex with no spaces:
+    cansend vcan0 601#<command><index low><index high><subindex><value>
 
-CAN ID: the channel
-    601  request, host to device (0x600 + node ID)
-    581  reply, device to host (0x580 + node ID)
+    601          CAN ID of a request to node 1 (0x600 + node ID)
+    command      1 byte: the operation and size, from the command bytes below
+    index low    1 byte: low byte of the index
+    index high   1 byte: high byte of the index
+    subindex     1 byte
+    value        4 bytes, low byte first, with unused bytes set to 00
+                 A read sends 00 00 00 00.
 
-Data bytes: always 8, with multi-byte fields low byte first
-    Byte 0     command: the operation, and the value size if it has one
-    Bytes 1-2  index, the first part of the address
-    Byte 3     subindex, the second part of the address
-    Bytes 4-7  value or abort code, with unused bytes set to 00
-
-Command byte: bits 7-5 select the operation, and bits 3-2 count the unused
-value bytes
-    Command  Bits       Meaning
-    2F       0010 1111  write request, 1 byte (3 unused)
-    2B       0010 1011  write request, 2 bytes (2 unused)
-    23       0010 0011  write request, 4 bytes (0 unused)
-    60       0110 0000  write reply: value stored
-    40       0100 0000  read request (the size comes from the object)
-    4F       0100 1111  read reply, 1 byte (3 unused)
-    4B       0100 1011  read reply, 2 bytes (2 unused)
-    43       0100 0011  read reply, 4 bytes (0 unused)
-    80       1000 0000  abort reply: bytes 4-7 hold the abort code
-
-To send a request, join its ID and bytes with no spaces, as in the first write:
+Example: write 0x0006 to Controlword (index 0x6040, subindex 0x00)
     cansend vcan0 601#2B40600006000000
-Run candump vcan0 in another terminal to see the reply.
-
-Write: store Controlword = 0x0006 at 0x6040
-    Request  601  2B 40 60 00 06 00 00 00
-    Reply    581  60 40 60 00 00 00 00 00
 
     2B           write 2 bytes
     40 60        index 0x6040, low byte first
     00           subindex 0x00
     06 00        value 0x0006, low byte first
     00 00        unused
-    60           the reply: stored
-    40 60 00     the reply repeats the address, so the host can match it
-    00 00 00 00  a successful write returns no data
 
-Write: address does not exist
-    Request  601  2B 00 20 00 01 00 00 00
-    Reply    581  80 00 20 00 00 00 02 06
-    Abort code 0x06020000, sent low byte first as 00 00 02 06.
+Run candump vcan0 in another terminal to see the reply. It arrives on CAN ID
+581 (0x580 + node ID), with the same address in bytes 1-3 so the host can match
+it to the request.
 
-Write: register is read-only (Statusword)
-    Request  601  2B 41 60 00 01 00 00 00
-    Reply    581  80 41 60 00 02 00 01 06
-    Abort code 0x06010002.
+Command bytes: bits 7-5 select the operation, and bits 3-2 count the unused
+value bytes
+    Byte  Bits       Sent by  Meaning
+    40    0100 0000  host     read request (the size comes from the object)
+    2F    0010 1111  host     write request, 1 byte (3 unused)
+    2B    0010 1011  host     write request, 2 bytes (2 unused)
+    23    0010 0011  host     write request, 4 bytes (0 unused)
+    4F    0100 1111  device   read reply, 1 byte (3 unused)
+    4B    0100 1011  device   read reply, 2 bytes (2 unused)
+    43    0100 0011  device   read reply, 4 bytes (0 unused)
+    60    0110 0000  device   write reply: value stored
+    80    1000 0000  device   abort reply: bytes 4-7 hold the abort code
 
-Write: size does not match the register (4 bytes to 2-byte Controlword)
-    Request  601  23 40 60 00 01 00 00 00
-    Reply    581  80 40 60 00 10 00 07 06
-    Abort code 0x06070010.
+Abort codes, sent low byte first in bytes 4-7 of an 80 reply:
+    Code        Bytes        Meaning
+    0x06020000  00 00 02 06  the index and subindex do not exist
+    0x06010002  02 00 01 06  the register is read-only
+    0x06070010  10 00 07 06  the size does not match the register
 
-Write: 1 byte to the read-only Error Register
-    Request  601  2F 01 10 00 01 00 00 00
-    Reply    581  80 01 10 00 02 00 01 06
-    Abort code 0x06010002. The read-only check runs before the size check. No
-    1-byte or 4-byte register is writable yet, so 2F and 23 cannot store a
-    value today.
+Command table: run these in order on a freshly started emulator, since the
+write changes the Controlword value read in the last row.
 
-How the emulator handles a write, in emulator.py:
+    Action                  Command                             Reply on 581             Result
+    Read Device Type        cansend vcan0 601#4000100000000000  43 00 10 00 92 01 02 00  0x00020192
+    Read Error Register     cansend vcan0 601#4001100000000000  4F 01 10 00 00 00 00 00  0x00
+    Read Controlword        cansend vcan0 601#4040600000000000  4B 40 60 00 00 00 00 00  0x0000
+    Read Statusword         cansend vcan0 601#4041600000000000  4B 41 60 00 40 01 00 00  0x0140
+    Read missing address    cansend vcan0 601#4000200000000000  80 00 20 00 00 00 02 06  abort: no object
+    Write Controlword       cansend vcan0 601#2B40600006000000  60 40 60 00 00 00 00 00  stored 0x0006
+    Write missing address   cansend vcan0 601#2B00200001000000  80 00 20 00 00 00 02 06  abort: no object
+    Write Statusword        cansend vcan0 601#2B41600001000000  80 41 60 00 02 00 01 06  abort: read-only
+    Write Controlword, 4 B  cansend vcan0 601#2340600001000000  80 40 60 00 10 00 07 06  abort: wrong size
+    Write Error Register    cansend vcan0 601#2F01100001000000  80 01 10 00 02 00 01 06  abort: read-only
+    Read Controlword again  cansend vcan0 601#4040600000000000  4B 40 60 00 06 00 00 00  0x0006
+
+The read-only check runs before the size check, which is why the 1-byte write to
+the Error Register gets a read-only abort. No 1-byte or 4-byte register is
+writable yet, so 2F and 23 cannot store a value today.
+
+How the emulator handles a request, in emulator.py:
     1. main() matches CAN ID 601 and calls handle_sdo_request.
-    2. decode_sdo_write checks for 8 bytes and a known command, then extracts
-       the index, subindex, value and size.
-    3. apply_sdo_write checks that the object exists, is writable and has the
-       right size, in that order, then stores the value in OBJECTS.
-    4. send_sdo_reply sends 60, or 80 with the abort code.
-
-Read: Statusword at 0x6041 (replies here show the emulator's startup values)
-    Request  601  40 41 60 00 00 00 00 00
-    Reply    581  4B 41 60 00 40 01 00 00
-
-    40           read
-    41 60 00     address 0x6041, subindex 0x00
-    00 00 00 00  a read request carries no data
-    4B           the reply: 2 bytes follow
-    40 01        value 0x0140, low byte first
-    00 00        unused
-
-Read: other reply sizes
-    1 byte, Error Register at 0x1001
-    Request  601  40 01 10 00 00 00 00 00
-    Reply    581  4F 01 10 00 00 00 00 00
-
-    4 bytes, Device Type at 0x1000, value 0x00020192
-    Request  601  40 00 10 00 00 00 00 00
-    Reply    581  43 00 10 00 92 01 02 00
-
-Read: address does not exist
-    Request  601  40 00 20 00 00 00 00 00
-    Reply    581  80 00 20 00 00 00 02 06
-    Abort code 0x06020000.
-
-How the emulator handles a read, in emulator.py:
-    1. handle_sdo_request spots command 40 and calls handle_sdo_read.
-    2. handle_sdo_read looks up the address in OBJECTS.
-    3. send_sdo_reply sends 4F, 4B or 43 with the value, or 80 with the abort
-       code.
+    2. For a read, handle_sdo_read looks up the address in OBJECTS.
+    3. For a write, decode_sdo_write checks for 8 bytes and a known command,
+       then extracts the index, subindex, value and size.
+       apply_sdo_write then checks that the object exists, is writable and has
+       the right size, in that order, and stores the value in OBJECTS.
+    4. send_sdo_reply sends the reply: 4F, 4B, 43 or 60 on success, or 80 with
+       the abort code.
 
 Limits:
     Any other command, or a frame without 8 data bytes, prints "SDO unsupported"
@@ -214,3 +196,31 @@ Limits:
     emulator treats it as unsupported.
     A real EPOS2 can use abort code 0x06090011 for a wrong subindex. The
     emulator always sends 0x06020000 for a missing address.
+
+Drive states
+------------
+A real drive only runs after the host walks it through a fixed sequence of
+states. The host requests each change through Controlword, and the drive reports
+its state through Statusword.
+
+STATE_STATUSWORDS in drive_state.py lists the 12 states and the Statusword value
+for each, from the EPOS2 Firmware Specification, Table 3-4, page 3-15. The spec
+marks some bits as "x", meaning they are not part of the state, and the values
+here set them to 0.
+
+Nothing uses this table yet: the emulator stays in Switch On Disabled, and
+Controlword writes do not change its state.
+
+    State                             Statusword
+    Start                             0x0000
+    Not Ready to Switch On            0x0100
+    Switch On Disabled                0x0140
+    Ready to Switch On                0x0121
+    Switched On                       0x0123
+    Refresh                           0x4123
+    Measure Init                      0x4133
+    Operation Enable                  0x0137
+    Quickstop Active                  0x0117
+    Fault Reaction Active (disabled)  0x010F
+    Fault Reaction Active (enabled)   0x011F
+    Fault                             0x0108
