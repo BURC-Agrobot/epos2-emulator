@@ -33,6 +33,7 @@ Type these at the >>> prompt. They send nothing on the CAN bus.
     reg 0x6041     print one register (subindex 0x00, with or without the 0x)
     reg 0x6041 -b  also print its value in binary
     help           list the commands
+    --help         explain the output (also: emulator.py --help)
 
 All registers also print at startup and after each stored write:
     0x6041 sub 0x00 RO Statusword = 0x0140
