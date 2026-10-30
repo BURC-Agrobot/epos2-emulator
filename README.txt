@@ -1,8 +1,17 @@
 EPOS2 emulator
 ==============
 
-Pretends to be a maxon EPOS2 50/5 motor controller on a CAN bus,
-so host software can be tested without real hardware.
+Emulates a maxon EPOS2 50/5 motor controller as a device on a CAN bus, so
+host software can be tested without real hardware.
+
+The host plays the role of a CPU. The controller's object dictionary is its
+memory-mapped register space, and SDO messages are its bus transactions: a
+command byte selects read or write, the index and subindex form the address,
+and the remaining bytes carry the data. Host and device are separate computers
+with no shared clock, so each access is an asynchronous request and reply.
+
+So far the emulator only listens on the bus and prints each frame it receives.
+It does not answer SDOs or use the object dictionary yet.
 
 Setup (once, Ubuntu)
 --------------------
@@ -23,3 +32,55 @@ Check it with two terminals:
 Run
 ---
     .venv/bin/python emulator.py
+
+Object dictionary
+-----------------
+The registers currently defined, from OBJECTS in object_dictionary.py. Update
+this list whenever OBJECTS changes. Types and access come from the EPOS2
+Firmware Specification, chapter 8.
+
+Unlike a flat byte-addressed space, each address names a whole object with its
+own width and access rights, so an access covers the full value.
+
+Role is how the register behaves:
+    Storage: holds a value and does nothing else.
+    Status:  reports the device's state to the host.
+    Control: a write from the host commands the device.
+Sent is the type and width in a CAN frame, always low byte first.
+Stored is how the code holds the value: always a Python int in Entry.value.
+Starts at is the value held at startup.
+
+0x1000 sub 0x00  Device Type (read-only)
+    Role:      Storage
+    Identifies the device. The low half, 0x0192 (402), means the CiA 402
+    drive profile. The high half, 0x0002, means a servo drive. The value is
+    constant.
+    Sent:      UNSIGNED32, 4 bytes
+    Stored:    Python int
+    Starts at: 0x00020192
+
+0x1001 sub 0x00  Error Register (read-only)
+    Role:      Status
+    Summarizes current errors, with one bit per error class. Zero means no
+    errors.
+    Sent:      UNSIGNED8, 1 byte
+    Stored:    Python int
+    Starts at: 0x00
+
+0x6040 sub 0x00  Controlword (read/write)
+    Role:      Control
+    Carries host commands to the drive state machine, with bits for device
+    control and operating mode supervision. The emulator only stores this
+    value so far and does not act on it.
+    Sent:      UNSIGNED16, 2 bytes
+    Stored:    Python int
+    Starts at: 0x0000 (the spec gives no default, so no command)
+
+0x6041 sub 0x00  Statusword (read-only)
+    Role:      Status
+    Reports the drive's current state, with bits for the state machine and
+    the operating mode. The emulator does not update this value yet.
+    Sent:      UNSIGNED16, 2 bytes
+    Stored:    Python int
+    Starts at: 0x0140 (the spec gives no default: this is the "Switch On
+               Disabled" state with offset current measured, bits 8 and 6)
