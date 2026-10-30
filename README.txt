@@ -12,8 +12,8 @@ with no shared clock, so each access is an asynchronous request and reply.
 
 So far the emulator prints each frame it receives and answers single-frame SDO
 reads and writes of the object dictionary. Multi-frame transfers are not built
-yet: it prints "SDO unsupported" and sends no reply. Controlword writes move the
-drive through its states, and the Statusword reports the result.
+yet: it prints "SDO unsupported" and sends an abort reply. Controlword writes move
+the drive through its states, and the Statusword reports the result.
 
 Setup (once, Ubuntu)
 --------------------
@@ -151,10 +151,11 @@ value bytes
     4B    0100 1011  device   read reply, 2 bytes (2 unused)
     43    0100 0011  device   read reply, 4 bytes (0 unused)
     60    0110 0000  device   write reply: value stored
-    80    1000 0000  device   abort reply: bytes 4-7 hold the abort code
+    80    1000 0000  either   abort: bytes 4-7 hold the abort code
 
 Abort codes, sent low byte first in bytes 4-7 of an 80 reply:
     Code        Bytes        Meaning
+    0x05040001  01 00 04 05  the command is unknown, or the frame is not 8 bytes
     0x06020000  00 00 02 06  the index and subindex do not exist
     0x06010002  02 00 01 06  the register is read-only
     0x06070010  10 00 07 06  the size does not match the register
@@ -174,6 +175,8 @@ to Ready to Switch On, so the Statusword reads 0x0121 afterwards.
     Write Statusword        cansend vcan0 601#2B41600001000000  80 41 60 00 02 00 01 06  abort: read-only
     Write Controlword, 4 B  cansend vcan0 601#2340600001000000  80 40 60 00 10 00 07 06  abort: wrong size
     Write Error Register    cansend vcan0 601#2F01100001000000  80 01 10 00 02 00 01 06  abort: read-only
+    Unknown command         cansend vcan0 601#2240600006000000  80 40 60 00 01 00 04 05  abort: unknown command
+    Frame too short         cansend vcan0 601#404060            80 40 60 00 01 00 04 05  abort: unknown command
     Read Controlword again  cansend vcan0 601#4040600000000000  4B 40 60 00 06 00 00 00  0x0006
 
 The read-only check runs before the size check, which is why the 1-byte write to
@@ -181,22 +184,31 @@ the Error Register gets a read-only abort. No 1-byte or 4-byte register is
 writable yet, so 2F and 23 cannot store a value today.
 
 How the emulator handles a request, in emulator.py:
-    1. main() matches CAN ID 601 and calls handle_sdo_request.
-    2. For a read, handle_sdo_read looks up the address in OBJECTS.
-    3. For a write, decode_sdo_write checks for 8 bytes and a known command,
-       then extracts the index, subindex, value and size.
+    1. main() matches data frames on CAN ID 601 and calls handle_sdo_request.
+    2. A frame without 8 data bytes is refused with abort 0x05040001.
+    3. For a read, handle_sdo_read looks up the address in OBJECTS.
+    4. For a write, decode_sdo_write checks for a known command, then extracts
+       the index, subindex, value and size. An unknown command is refused with
+       abort 0x05040001.
        apply_sdo_write then checks that the object exists, is writable and has
        the right size, in that order, and stores the value in OBJECTS.
-    4. send_sdo_reply sends the reply: 4F, 4B, 43 or 60 on success, or 80 with
+    5. send_sdo_reply sends the reply: 4F, 4B, 43 or 60 on success, or 80 with
        the abort code.
 
+Every request on 601 gets exactly one reply, with two exceptions:
+    A host abort (command 80) gets no reply, since an abort is never answered.
+    A remote frame (RTR) is not a request, so it is logged and ignored.
+
 Limits:
-    Any other command, or a frame without 8 data bytes, prints "SDO unsupported"
-    and gets no reply, so a host waiting for one will time out.
+    A refused frame's reply repeats bytes 1-3 of the request as the address, and
+    any bytes a short frame does not have are sent as 00.
     Only Controlword (0x6040) is writable today.
     Written values are lost when the emulator stops.
     Command 22 (a write with no stated size) is valid on a real EPOS2, but the
-    emulator treats it as unsupported.
+    emulator refuses it as an unknown command. Multi-frame transfer commands get
+    the same abort.
+    The Communication Guide does not say how a real EPOS2 answers a frame without
+    8 data bytes. Abort 0x05040001 is the emulator's choice.
     A real EPOS2 can use abort code 0x06090011 for a wrong subindex. The
     emulator always sends 0x06020000 for a missing address.
 

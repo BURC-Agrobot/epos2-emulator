@@ -31,8 +31,9 @@ SDO_READ_REQUEST = 0x40
 # (Application Notes 10.4.1, expedited transfer, scs = 2)
 SDO_READ_REPLY = {1: 0x4F, 2: 0x4B, 4: 0x43}
 
-# Abort codes, sent back when a write is refused
+# Abort codes, sent back when a request is refused
 # Communication Guide 8.1, page 8-47
+ABORT_UNKNOWN_COMMAND = 0x05040001
 ABORT_READ_ONLY = 0x06010002
 ABORT_NO_OBJECT = 0x06020000
 ABORT_LENGTH_MISMATCH = 0x06070010
@@ -101,17 +102,11 @@ def handle_command(line: str) -> None:
         print(f"Unknown command: {line.strip()} (type help for a list)")
 
 
-# Pull the fields out of an SDO write request, or return None if it is not one
+# Pull the fields out of an 8-byte SDO write request, or return None if it is not one
 def decode_sdo_write(data: bytes) -> tuple[int, int, int, int] | None:
-    # Refuse frames too short to hold all the fields
-    if len(data) != SDO_FRAME_SIZE_BYTES:
-        print(f"SDO unsupported: expected 8 data bytes, got {len(data)}")
-        return None
     # Byte 0 is the command, which also tells us the size of the value
     command = data[0]
     if command not in SDO_WRITE_SIZE_BYTES:
-        # Reads and multi-frame transfers are not built yet
-        print(f"SDO unsupported: command 0x{command:02X}")
         return None
     size_bytes = SDO_WRITE_SIZE_BYTES[command]
     # Bytes 1-2 are the index, low byte first
@@ -186,15 +181,33 @@ def handle_sdo_read(bus: can.BusABC, data: bytes) -> None:
     send_sdo_reply(bus, SDO_READ_REPLY[entry.size_bytes], index, subindex, entry.value)
 
 
+# Answer a request the emulator cannot understand with an abort
+def refuse_unsupported_request(bus: can.BusABC, data: bytes, reason: str) -> None:
+    # A short frame may not hold the address, so missing bytes count as zero
+    index = int.from_bytes(data[1:3], "little")
+    subindex = data[3] if len(data) > 3 else 0
+    print(f"SDO unsupported: {reason}, sending abort 0x{ABORT_UNKNOWN_COMMAND:08X} on 0x{SDO_RESPONSE_ID:03X}")
+    send_sdo_reply(bus, SDO_ABORT, index, subindex, ABORT_UNKNOWN_COMMAND)
+
+
 # Handle one SDO request: read or write a register, and reply to the host
 def handle_sdo_request(bus: can.BusABC, data: bytes) -> None:
+    # Every SDO frame has 8 data bytes, so anything else is not a valid request
+    if len(data) != SDO_FRAME_SIZE_BYTES:
+        refuse_unsupported_request(bus, data, f"expected 8 data bytes, got {len(data)}")
+        return
+    # The host is cancelling a transfer, and an abort must never be answered
+    if data[0] == SDO_ABORT:
+        print("SDO abort received from host, no reply")
+        return
     # Reads are identified first, since they have no size or value to decode
-    if len(data) == SDO_FRAME_SIZE_BYTES and data[0] == SDO_READ_REQUEST:
+    if data[0] == SDO_READ_REQUEST:
         handle_sdo_read(bus, data)
         return
-    # Unsupported requests were already reported, and get no reply yet
     request = decode_sdo_write(data)
     if request is None:
+        # Includes multi-frame transfers, which are not built yet
+        refuse_unsupported_request(bus, data, f"command 0x{data[0]:02X}")
         return
     index, subindex, value, size_bytes = request
     print(f"SDO write index=0x{index:04X} sub=0x{subindex:02X} value=0x{value:X} size_bytes={size_bytes}")
@@ -238,8 +251,9 @@ def main() -> None:
                     print()
                     # Print the CAN ID and data bytes in hex, like candump
                     print(f"RX id=0x{frame.arbitration_id:03X} data={frame.data.hex(' ').upper()}")
-                    # Only standard 11-bit frames with our request ID are SDOs for us
-                    if frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id:
+                    # Only standard 11-bit data frames with our request ID are SDOs for us
+                    if (frame.arbitration_id == SDO_REQUEST_ID and not frame.is_extended_id
+                            and not frame.is_remote_frame):
                         handle_sdo_request(bus, bytes(frame.data))
                 if sys.stdin in ready:
                     line = sys.stdin.readline()
