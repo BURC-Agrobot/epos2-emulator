@@ -103,9 +103,33 @@ Reading the CAN log:
   data=       the frame's data bytes in hex, with values sent low byte first
 
 Every frame on the bus is logged. Only a request to this device gets a reply:
-requests use CAN ID 0x600 + node ID, and replies use 0x580 + node ID. The lines
-after a request say what the emulator did with it. See SDO frames in README.txt
-for the meaning of each byte."""
+requests use CAN ID 0x600 + node ID, and replies use 0x580 + node ID. See SDO
+frames in README.txt for the meaning of each byte.
+
+The emulator's own replies are not logged as frames, so use candump to see their
+bytes. An RX line with a reply's CAN ID comes from another emulator on the bus.
+
+Lines after a request:
+  SDO read index= sub=         a read request arrived
+  SDO read ok                  the read succeeded, with the value sent back
+  SDO read refused             the address does not exist, so an abort was sent
+  SDO write index= sub=        a write request arrived, with its value and size
+  SDO write stored             the write was accepted, and all registers follow
+  SDO write refused            the write failed a check, so an abort was sent
+  SDO unsupported              unknown command or not 8 bytes, abort sent
+  SDO abort received           the host cancelled a transfer, no reply sent
+  SDO reply failed to send     the CAN interface could not send the reply
+
+Lines about the drive:
+  Controlword <value>: <command>, <old state> -> <new state>
+                               a Controlword write changed the drive state
+  Controlword <value>: <command>, staying in <state>
+                               the command does not apply in this state
+  New setpoint: target= relative= immediately=
+                               a move was accepted
+  New setpoint ignored         needs Operation Enable and Profile Position Mode
+  Target reached at <position>
+                               the last move finished"""
 
 
 # Print one register's address, access, name and value in hex, and optionally binary
